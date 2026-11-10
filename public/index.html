@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Domain Takipçisi</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="icon.svg" alt="" width="34" height="34">
+      <div>
+        <h1>Domain Takipçisi</h1>
+        <p>Alan adı bitiş tarihlerini takip eder</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button class="btn ghost" id="refreshAllBtn" title="Tüm alan adlarını yeniden sorgula">↻ Tümünü yenile</button>
+      <div class="menu">
+        <button class="btn ghost" id="menuBtn" aria-haspopup="true">Dışa / İçe aktar ▾</button>
+        <div class="menu-list" id="menuList" hidden>
+          <button data-act="csv">CSV olarak indir</button>
+          <button data-act="ics">Takvime ekle (.ics hatırlatıcılar)</button>
+          <button data-act="json">Yedek al (.json)</button>
+          <button data-act="import">Yedekten geri yükle…</button>
+        </div>
+      </div>
+      <input type="file" id="importFile" accept=".json,application/json" hidden>
+    </div>
+  </header>
+
+  <main>
+    <section class="stats" id="stats">
+      <button class="stat" data-filter="all"><span class="n" id="sTotal">0</span><span class="l">Toplam</span></button>
+      <button class="stat danger" data-filter="expired"><span class="n" id="sExpired">0</span><span class="l">Süresi dolmuş</span></button>
+      <button class="stat warn" data-filter="soon"><span class="n" id="sSoon">0</span><span class="l"><span id="sSoonLabel">30</span> gün içinde</span></button>
+      <button class="stat ok" data-filter="ok"><span class="n" id="sOk">0</span><span class="l">Güvende</span></button>
+      <button class="stat muted" data-filter="unknown"><span class="n" id="sUnknown">0</span><span class="l">Bilinmiyor</span></button>
+    </section>
+
+    <section class="card add-card">
+      <form id="addForm" autocomplete="off">
+        <textarea id="addInput" rows="1" placeholder="Alan adı ekle — ör. ornek.com (birden fazlası için virgül ya da satır başı kullanın)"></textarea>
+        <button class="btn primary" type="submit" id="addBtn">Ekle ve sorgula</button>
+      </form>
+      <p class="hint">Bitiş tarihi RDAP / WHOIS üzerinden otomatik bulunur. Bulunamazsa elle girebilirsiniz.</p>
+    </section>
+
+    <section class="card">
+      <div class="toolbar">
+        <input type="search" id="search" placeholder="Ara: alan adı, firma, not, etiket…">
+        <div class="seg" id="filterSeg">
+          <button data-filter="all" class="on">Tümü</button>
+          <button data-filter="expired">Dolmuş</button>
+          <button data-filter="soon">Yaklaşan</button>
+          <button data-filter="ok">Güvende</button>
+          <button data-filter="unknown">Bilinmiyor</button>
+        </div>
+        <label class="thresh">Uyarı eşiği
+          <select id="threshold">
+            <option value="7">7 gün</option>
+            <option value="14">14 gün</option>
+            <option value="30" selected>30 gün</option>
+            <option value="60">60 gün</option>
+            <option value="90">90 gün</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="table-wrap">
+        <table id="table">
+          <thead>
+            <tr>
+              <th data-sort="name">Alan adı</th>
+              <th data-sort="days" class="sorted asc">Kalan</th>
+              <th data-sort="expiry" class="hide-sm">Bitiş tarihi</th>
+              <th data-sort="registrar" class="hide-sm">Kayıt firması</th>
+              <th class="hide-md">Not</th>
+              <th data-sort="checked" class="hide-md">Son kontrol</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+        <div class="empty" id="empty" hidden>
+          <div class="empty-icon">🌐</div>
+          <h3>Henüz alan adı yok</h3>
+          <p>Yukarıdaki kutuya takip etmek istediğiniz alan adlarını yazın.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="editDialog">
+    <form method="dialog" id="editForm">
+      <h2 id="editTitle">Düzenle</h2>
+      <label>Bitiş tarihi
+        <input type="date" id="editExpiry">
+        <small>Elle girilen tarih, otomatik sorgu yeni bir tarih bulana kadar korunur.</small>
+      </label>
+      <label>Kayıt firması
+        <input type="text" id="editRegistrar" maxlength="200">
+      </label>
+      <label>Etiketler <small>(virgülle ayırın)</small>
+        <input type="text" id="editTags" placeholder="müşteri, kişisel…">
+      </label>
+      <label>Not
+        <textarea id="editNote" rows="3" maxlength="1000"></textarea>
+      </label>
+      <div class="details" id="editDetails"></div>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn ghost" formnovalidate>Vazgeç</button>
+        <button value="save" class="btn primary" id="editSave">Kaydet</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
