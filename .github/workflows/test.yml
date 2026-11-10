@@ -16,6 +16,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         node: [18, 20, 22]
+        exclude:
+          # Ücretsiz planda macOS çalıştırıcısı kısıtlı; Node 18 Linux ve Windows'ta zaten test ediliyor.
+          - os: macos-latest
+            node: 18
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

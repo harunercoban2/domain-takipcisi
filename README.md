@@ -76,7 +76,8 @@ npm test
 
 Testler ağa çıkmaz ve geçici bir veri klasörü kullanır. Alan adı ve tarih ayrıştırma, WHOIS okuma,
 API hata kodları, güvenlik kontrolleri ve veri kurtarma senaryolarını kapsar. GitHub Actions her
-değişiklikte testleri Linux, macOS ve Windows'ta Node.js 18, 20 ve 22 ile çalıştırır.
+değişiklikte testleri Linux, macOS ve Windows'ta Node.js 18, 20 ve 22 ile çalıştırır
+(macOS'ta 20 ve 22).
 
 ## Notlar
 
