@@ -4,12 +4,17 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const DAY = 86400000;
 
+function readThreshold() {
+  try { return [7, 14, 30, 60, 90].includes(Number(localStorage.getItem('threshold'))) ? Number(localStorage.getItem('threshold')) : 30; }
+  catch { return 30; }
+}
+
 const state = {
   domains: [],
   filter: 'all',
   search: '',
   sort: { key: 'days', dir: 'asc' },
-  threshold: Number(localStorage.getItem('threshold')) || 30,
+  threshold: readThreshold(),
   busy: new Set(),
 };
 
@@ -70,7 +75,6 @@ function badgeText(n) {
   if (n < 0) return `${-n} gün geçti`;
   if (n === 0) return 'Bugün!';
   if (n === 1) return 'Yarın';
-  if (n < 60) return `${n} gün`;
   if (n < 730) return `${n} gün`;
   return `${(n / 365).toFixed(1).replace('.', ',')} yıl`;
 }
@@ -140,9 +144,9 @@ function render() {
     const busy = state.busy.has(d.id);
     const pct = n === null ? 0 : Math.max(2, Math.min(100, (n / 365) * 100));
     const shown = d.displayName || d.name;
-    return `<tr data-id="${d.id}">
+    return `<tr data-id="${esc(d.id)}">
       <td>
-        <div class="dn"><a href="https://${esc(d.name)}" target="_blank" rel="noopener">${esc(shown)}</a></div>
+        <div class="dn"><a href="https://${esc(d.name)}" target="_blank" rel="noopener">${esc(shown).replace(/\./g, '.<wbr>')}</a></div>
         ${shown !== d.name ? `<div class="sub">${esc(d.name)}</div>` : ''}
         ${(d.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}
         ${d.error ? `<div class="err">⚠ ${esc(d.error)}</div>` : ''}
@@ -161,9 +165,9 @@ function render() {
       <td class="hide-md" title="${d.lastChecked ? new Date(d.lastChecked).toLocaleString('tr-TR') : ''}"><span class="sub">${fmtRelative(d.lastChecked)}</span></td>
       <td>
         <div class="actions">
-          <button class="icon-btn ${busy ? 'spin' : ''}" data-act="refresh" title="Yeniden sorgula">↻</button>
-          <button class="icon-btn" data-act="edit" title="Düzenle">✎</button>
-          <button class="icon-btn del" data-act="delete" title="Sil">🗑</button>
+          <button class="icon-btn ${busy ? 'spin' : ''}" data-act="refresh" title="Yeniden sorgula" aria-label="${esc(shown)} yeniden sorgula" ${busy ? 'disabled' : ''}>↻</button>
+          <button class="icon-btn" data-act="edit" title="Düzenle" aria-label="${esc(shown)} düzenle">✎</button>
+          <button class="icon-btn del" data-act="delete" title="Sil" aria-label="${esc(shown)} sil">🗑</button>
         </div>
       </td>
     </tr>`;
@@ -197,6 +201,7 @@ async function addDomains(text) {
 }
 
 async function refreshOne(id) {
+  if (state.busy.has(id)) return;
   state.busy.add(id); render();
   try {
     const rec = await api(`/api/domains/${id}/refresh`, { method: 'POST' });
@@ -235,10 +240,14 @@ async function refreshAll() {
 async function removeOne(id) {
   const d = state.domains.find((x) => x.id === id);
   if (!d || !confirm(`"${d.displayName || d.name}" listeden silinsin mi?`)) return;
-  await api(`/api/domains/${id}`, { method: 'DELETE' });
-  state.domains = state.domains.filter((x) => x.id !== id);
-  render();
-  toast('Silindi');
+  try {
+    await api(`/api/domains/${id}`, { method: 'DELETE' });
+    state.domains = state.domains.filter((x) => x.id !== id);
+    render();
+    toast('Silindi');
+  } catch (e) {
+    toast('Silinemedi: ' + e.message);
+  }
 }
 
 let editingId = null;
@@ -257,22 +266,24 @@ function openEdit(id) {
   if (d.status?.length) det.push(`<div>Durum: <b>${d.status.map(esc).join(', ')}</b></div>`);
   det.push(`<div>Eklenme: <b>${fmtDate(d.addedAt)}</b> · Son kontrol: <b>${fmtRelative(d.lastChecked)}</b></div>`);
   $('#editDetails').innerHTML = det.join('');
+  $('#editDialog').returnValue = ''; // Esc ile kapatınca önceki "save" değeri kalmasın
   $('#editDialog').showModal();
 }
 
-async function saveEdit() {
-  if (!editingId) return;
+async function saveEdit(id) {
+  const d = state.domains.find((x) => x.id === id);
+  if (!d) return;
+  const body = {
+    registrar: $('#editRegistrar').value,
+    tags: $('#editTags').value,
+    note: $('#editNote').value,
+  };
+  // Tarih yalnızca kullanıcı değiştirdiyse gönderilir; yoksa otomatik bulunan tarih "elle girildi" sayılırdı.
+  const newExpiry = $('#editExpiry').value;
+  if (newExpiry !== (d.expiry ? d.expiry.slice(0, 10) : '')) body.expiry = newExpiry || null;
   try {
-    const rec = await api(`/api/domains/${editingId}`, {
-      method: 'PUT',
-      body: {
-        expiry: $('#editExpiry').value || null,
-        registrar: $('#editRegistrar').value,
-        tags: $('#editTags').value,
-        note: $('#editNote').value,
-      },
-    });
-    const i = state.domains.findIndex((d) => d.id === editingId);
+    const rec = await api(`/api/domains/${id}`, { method: 'PUT', body });
+    const i = state.domains.findIndex((d) => d.id === id);
     if (i >= 0) state.domains[i] = rec;
     render();
     toast('Kaydedildi');
@@ -294,7 +305,12 @@ function download(name, content, type) {
 const stamp = () => new Date().toISOString().slice(0, 10);
 
 function exportCsv() {
-  const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  // Excel/Sheets formül enjeksiyonunu önle: =, +, -, @, sekme ile başlayan hücreleri metne çevir.
+  const q = (v) => {
+    let s = String(v ?? '');
+    if (typeof v === 'string' && /^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return `"${s.replace(/"/g, '""')}"`;
+  };
   const rows = [['Alan adı', 'Bitiş tarihi', 'Kalan gün', 'Durum', 'Kayıt firması', 'Etiketler', 'Not', 'Son kontrol']];
   const lbl = { expired: 'Süresi dolmuş', soon: 'Yaklaşıyor', ok: 'Güvende', unknown: 'Bilinmiyor' };
   for (const d of state.domains) {
@@ -309,6 +325,19 @@ function exportIcs() {
   if (!withDate.length) return toast('Bitiş tarihi bilinen alan adı yok');
   const ymd = (dt) => dt.toISOString().slice(0, 10).replace(/-/g, '');
   const now = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+  // RFC 5545: metinde \ ; , ve satır sonu kaçışlanır, satırlar 75 baytta katlanır.
+  const t = (s) => String(s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+  const fold = (line) => {
+    const out = [];
+    let cur = '', bytes = 0;
+    for (const ch of line) {
+      const b = new TextEncoder().encode(ch).length;
+      if (bytes + b > (out.length ? 74 : 75)) { out.push(cur); cur = ''; bytes = 0; }
+      cur += ch; bytes += b;
+    }
+    out.push(cur);
+    return out.join('\r\n ');
+  };
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Domain Takipcisi//TR', 'CALSCALE:GREGORIAN', 'X-WR-CALNAME:Alan Adı Bitişleri'];
   for (const d of withDate) {
     const e = new Date(d.expiry);
@@ -316,14 +345,14 @@ function exportIcs() {
     const name = d.displayName || d.name;
     lines.push('BEGIN:VEVENT', `UID:${d.id}@domaintakip`, `DTSTAMP:${now}`,
       `DTSTART;VALUE=DATE:${ymd(e)}`, `DTEND;VALUE=DATE:${ymd(next)}`,
-      `SUMMARY:⚠ ${name} alan adının süresi doluyor`,
-      `DESCRIPTION:${name} alan adının bitiş tarihi. Kayıt firması: ${(d.registrar || 'bilinmiyor').replace(/[,;]/g, ' ')}`,
-      'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${name} 30 gün sonra doluyor`, 'TRIGGER:-P30D', 'END:VALARM',
-      'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${name} 7 gün sonra doluyor`, 'TRIGGER:-P7D', 'END:VALARM',
+      `SUMMARY:${t(`⚠ ${name} alan adının süresi doluyor`)}`,
+      `DESCRIPTION:${t(`${name} alan adının bitiş tarihi. Kayıt firması: ${d.registrar || 'bilinmiyor'}`)}`,
+      'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${t(`${name} 30 gün sonra doluyor`)}`, 'TRIGGER:-P30D', 'END:VALARM',
+      'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${t(`${name} 7 gün sonra doluyor`)}`, 'TRIGGER:-P7D', 'END:VALARM',
       'END:VEVENT');
   }
   lines.push('END:VCALENDAR');
-  download(`domain-bitisleri-${stamp()}.ics`, lines.join('\r\n'), 'text/calendar;charset=utf-8');
+  download(`domain-bitisleri-${stamp()}.ics`, lines.map(fold).join('\r\n') + '\r\n', 'text/calendar;charset=utf-8');
   toast(`${withDate.length} hatırlatıcı takvim dosyasına eklendi`);
 }
 
@@ -367,7 +396,7 @@ $('#threshold').value = String(state.threshold);
 if (!$('#threshold').value) $('#threshold').value = '30';
 $('#threshold').addEventListener('change', (e) => {
   state.threshold = Number(e.target.value);
-  localStorage.setItem('threshold', state.threshold);
+  try { localStorage.setItem('threshold', state.threshold); } catch { /* gizli pencere vb. */ }
   render();
 });
 
@@ -379,7 +408,7 @@ $$('th[data-sort]').forEach((th) => th.addEventListener('click', () => {
 
 $('#tbody').addEventListener('click', (e) => {
   const btn = e.target.closest('[data-act]');
-  if (!btn) return;
+  if (!btn || btn.disabled) return;
   const id = btn.closest('tr').dataset.id;
   if (btn.dataset.act === 'refresh') refreshOne(id);
   if (btn.dataset.act === 'edit') openEdit(id);
@@ -391,16 +420,22 @@ $('#tbody').addEventListener('dblclick', (e) => {
 });
 
 $('#editDialog').addEventListener('close', () => {
-  if ($('#editDialog').returnValue === 'save') saveEdit();
+  const id = editingId;
   editingId = null;
+  if ($('#editDialog').returnValue === 'save') saveEdit(id);
 });
 
 $('#refreshAllBtn').addEventListener('click', refreshAll);
 
-$('#menuBtn').addEventListener('click', (e) => { e.stopPropagation(); $('#menuList').hidden = !$('#menuList').hidden; });
-document.addEventListener('click', () => ($('#menuList').hidden = true));
+function setMenu(open) {
+  $('#menuList').hidden = !open;
+  $('#menuBtn').setAttribute('aria-expanded', String(open));
+}
+$('#menuBtn').addEventListener('click', (e) => { e.stopPropagation(); setMenu($('#menuList').hidden); });
+document.addEventListener('click', () => setMenu(false));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setMenu(false); });
 $('#menuList').addEventListener('click', (e) => {
-  const act = e.target.dataset.act;
+  const act = e.target.closest('[data-act]')?.dataset.act;
   if (act === 'csv') exportCsv();
   if (act === 'ics') exportIcs();
   if (act === 'json') exportJson();

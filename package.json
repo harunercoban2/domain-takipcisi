@@ -4,10 +4,29 @@
   "description": "Domain Takipçisi — alan adı bitiş tarihlerini takip eder",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "keywords": [
+    "domain",
+    "alan-adi",
+    "whois",
+    "rdap",
+    "domain-expiry",
+    "nodejs"
+  ],
+  "author": "Harun Erçoban (https://harunercoban.com)",
+  "homepage": "https://github.com/harunercoban2/domain-takipcisi#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/harunercoban2/domain-takipcisi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/harunercoban2/domain-takipcisi/issues"
+  },
+  "private": true
 }

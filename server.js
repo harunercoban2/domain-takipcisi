@@ -10,7 +10,7 @@ const crypto = require('crypto');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '127.0.0.1';
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'domains.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const AUTO_REFRESH_HOURS = Number(process.env.AUTO_REFRESH_HOURS) || 24;
@@ -18,11 +18,22 @@ const AUTO_REFRESH_HOURS = Number(process.env.AUTO_REFRESH_HOURS) || 24;
 // ---------------------------------------------------------------- Depolama
 
 function loadDb() {
+  let raw;
   try {
-    const db = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    if (!Array.isArray(db.domains)) db.domains = [];
-    return db;
-  } catch {
+    raw = fs.readFileSync(DATA_FILE, 'utf8');
+  } catch (e) {
+    if (e.code === 'ENOENT') return { domains: [] }; // ilk çalıştırma
+    throw e;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.domains)) throw new Error('domains dizisi yok');
+    return parsed;
+  } catch (e) {
+    // Bozuk dosyanın üzerine boş liste yazıp veriyi kaybetmemek için önce yedeğini al.
+    const backup = `${DATA_FILE}.bozuk-${Date.now()}`;
+    fs.copyFileSync(DATA_FILE, backup);
+    console.error(`  ⚠ ${DATA_FILE} okunamadı (${e.message}). Yedeği: ${backup}`);
     return { domains: [] };
   }
 }
@@ -50,7 +61,8 @@ function normalizeDomain(input) {
   if (!s.includes('.')) return null;
   const ascii = url.domainToASCII(s);     // IDN → punycode (ör. türkçe.com)
   if (!ascii || !/^[a-z0-9.-]+$/.test(ascii)) return null;
-  if (ascii.split('.').some((p) => !p || p.length > 63)) return null;
+  if (ascii.length > 253 || ascii.split('.').some((p) => !p || p.length > 63 || p.startsWith('-') || p.endsWith('-'))) return null;
+  if (!/[a-z]/.test(tldOf(ascii))) return null; // IP adresi ya da sayısal uzantı
   return { ascii, unicode: url.domainToUnicode(ascii) || ascii };
 }
 
@@ -113,7 +125,8 @@ async function lookupRdap(domain) {
   const data = await fetchJson(base.replace(/\/?$/, '/') + 'domain/' + domain);
   const ev = (name) => {
     const e = (data.events || []).find((x) => x.eventAction === name);
-    return e ? new Date(e.eventDate).toISOString() : null;
+    const t = e ? Date.parse(e.eventDate) : NaN;
+    return Number.isNaN(t) ? null : new Date(t).toISOString();
   };
   let registrar = null;
   for (const ent of data.entities || []) {
@@ -141,7 +154,10 @@ function whoisQuery(server, query, timeoutMs = 12000) {
     const sock = net.createConnection({ host: server, port: 43 });
     sock.setTimeout(timeoutMs);
     sock.on('connect', () => sock.write(query + '\r\n'));
-    sock.on('data', (d) => { out += d.toString('utf8'); });
+    sock.on('data', (d) => {
+      out += d.toString('utf8');
+      if (out.length > WHOIS_MAX_BYTES) sock.destroy(); // aşırı büyük yanıtı kes
+    });
     sock.on('end', () => resolve(out));
     sock.on('close', () => resolve(out));
     sock.on('timeout', () => { sock.destroy(); reject(new Error('WHOIS zaman aşımı')); });
@@ -149,12 +165,15 @@ function whoisQuery(server, query, timeoutMs = 12000) {
   });
 }
 
+const WHOIS_MAX_BYTES = 256 * 1024;
+const HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
+
 const whoisServerCache = {};
 async function whoisServerFor(tld) {
   if (whoisServerCache[tld] !== undefined) return whoisServerCache[tld];
   const txt = await whoisQuery('whois.iana.org', tld);
   const m = txt.match(/^\s*(?:whois|refer):\s*(\S+)/im);
-  whoisServerCache[tld] = m ? m[1] : null;
+  whoisServerCache[tld] = m && HOSTNAME_RE.test(m[1]) ? m[1] : null;
   return whoisServerCache[tld];
 }
 
@@ -167,7 +186,9 @@ function parseLooseDate(raw) {
   let m;
   const mk = (y, mo, d) => {
     const dt = new Date(Date.UTC(+y, mo, +d));
-    return isNaN(dt) || +y < 1985 || +y > 2200 ? null : dt.toISOString();
+    if (isNaN(dt) || +y < 1985 || +y > 2200) return null;
+    if (dt.getUTCMonth() !== mo || dt.getUTCDate() !== +d) return null; // ör. 2027-13-45 ya da 31 Şubat
+    return dt.toISOString();
   };
   if ((m = s.match(/^(\d{4})[-.\/](\d{1,2})[-.\/](\d{1,2})(?:$|[T\s])/))) {
     const full = Date.parse(s.replace(' ', 'T'));
@@ -230,9 +251,10 @@ async function lookupWhois(domain) {
   let parsed = parseWhois(txt);
   // İnce kayıt (thin) — kayıt firmasının WHOIS sunucusuna yönlendirme
   const refer = whoisField(txt, ['Registrar WHOIS Server', 'Whois Server']);
-  if (!parsed.expiry && refer && refer !== server) {
+  const referHost = refer && refer.replace(/^[a-z]+:\/\//i, '').replace(/[\/:].*$/, '');
+  if (!parsed.expiry && referHost && referHost !== server && HOSTNAME_RE.test(referHost)) {
     try {
-      txt = await whoisQuery(refer.replace(/^https?:\/\//, '').replace(/\/.*/, ''), domain);
+      txt = await whoisQuery(referHost, domain);
       const p2 = parseWhois(txt);
       parsed = { ...parsed, ...Object.fromEntries(Object.entries(p2).filter(([, v]) => v && (!Array.isArray(v) || v.length))) };
     } catch { /* yoksay */ }
@@ -287,30 +309,106 @@ async function refreshRecord(rec) {
 
 // ---------------------------------------------------------------- HTTP
 
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+  'Content-Security-Policy':
+    "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; " +
+    "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+};
+
 function send(res, code, body, type = 'application/json; charset=utf-8') {
   const data = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
-  res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+  res.writeHead(code, { ...SECURITY_HEADERS, 'Content-Type': type, 'Cache-Control': 'no-store' });
   res.end(data);
 }
 
+class HttpError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let raw = '';
-    req.on('data', (c) => { raw += c; if (raw.length > 2e6) req.destroy(); });
-    req.on('end', () => { try { resolve(raw ? JSON.parse(raw) : {}); } catch (e) { reject(e); } });
-    req.on('error', reject);
+    const chunks = [];
+    let size = 0;
+    let done = false;
+    const fail = (err) => { if (!done) { done = true; reject(err); } };
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) {
+        fail(new HttpError(413, 'İstek çok büyük (en fazla 2 MB)'));
+        req.resume(); // kalan veriyi boşalt, bağlantı askıda kalmasın
+        return;
+      }
+      if (!done) chunks.push(c);
+    });
+    req.on('end', () => {
+      if (done) return;
+      done = true;
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (!raw) return resolve({});
+      try { resolve(JSON.parse(raw)); } catch { reject(new HttpError(400, 'Geçersiz JSON')); }
+    });
+    req.on('error', fail);
   });
 }
+
+// DNS rebinding ve CSRF koruması: API yalnızca bu uygulamanın kendi sayfasından çağrılabilir.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+const isLoopbackBind = ['127.0.0.1', 'localhost', '::1'].includes(HOST);
+
+function hostnameOf(hostHeader) {
+  const m = String(hostHeader || '').toLowerCase().match(/^(\[[^\]]+\]|[^:]+)(?::\d+)?$/);
+  return m ? m[1] : null;
+}
+
+function checkRequestOrigin(req) {
+  const host = String(req.headers.host || '').toLowerCase();
+  const hostname = hostnameOf(host);
+  if (!hostname) throw new HttpError(400, 'Geçersiz Host başlığı');
+  // Yalnız yerelde dinlerken: başka bir alan adı bu adrese yönlendirilmişse (DNS rebinding) reddet.
+  if (isLoopbackBind && !LOOPBACK_HOSTS.has(hostname) && !hostname.endsWith('.localhost')) {
+    throw new HttpError(403, 'Yalnızca localhost üzerinden erişilebilir');
+  }
+  // Tarayıcılar başka sitelerden gelen isteklerde Origin gönderir; kendi adresimiz değilse reddet.
+  const origin = req.headers.origin;
+  if (origin) {
+    let o;
+    try { o = new URL(origin); } catch { throw new HttpError(403, 'Geçersiz Origin'); }
+    if (o.host.toLowerCase() !== host) throw new HttpError(403, 'Başka bir siteden gelen istek reddedildi');
+  }
+  if (req.headers['sec-fetch-site'] && !['same-origin', 'none'].includes(req.headers['sec-fetch-site'])) {
+    throw new HttpError(403, 'Başka bir siteden gelen istek reddedildi');
+  }
+}
+
+function parseExpiryInput(value) {
+  if (!value) return null;
+  const iso = parseLooseDate(value);
+  if (!iso) throw new HttpError(400, `Geçersiz tarih: ${String(value).slice(0, 40)}`);
+  return iso;
+}
+
+const strList = (v, max, len) => (Array.isArray(v) ? v : [])
+  .filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim().slice(0, len)).slice(0, max);
+const isoOrNull = (v) => {
+  const t = typeof v === 'string' ? Date.parse(v) : NaN;
+  return Number.isNaN(t) ? null : new Date(t).toISOString();
+};
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
 
 function serveStatic(req, res, pathname) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'İzin verilmeyen yöntem', 'text/plain; charset=utf-8');
   const file = path.normalize(path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname));
-  if (!file.startsWith(PUBLIC_DIR)) return send(res, 403, 'Yasak', 'text/plain');
+  if (!file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 403, 'Yasak', 'text/plain; charset=utf-8');
   fs.readFile(file, (err, buf) => {
     if (err) return send(res, 404, 'Bulunamadı', 'text/plain; charset=utf-8');
-    send(res, 200, buf, MIME[path.extname(file)] || 'application/octet-stream');
+    send(res, 200, req.method === 'HEAD' ? '' : buf, MIME[path.extname(file)] || 'application/octet-stream');
   });
 }
 
@@ -325,6 +423,8 @@ async function handleApi(req, res, pathname) {
   if (pathname === '/api/domains' && method === 'POST') {
     const body = await readBody(req);
     const inputs = Array.isArray(body.domains) ? body.domains : String(body.domains || body.name || '').split(/[\s,;]+/);
+    if (inputs.length > MAX_ADD) throw new HttpError(400, `Tek seferde en fazla ${MAX_ADD} alan adı eklenebilir`);
+    const manualExpiry = parseExpiryInput(body.expiry);
     const added = [], skipped = [];
     for (const raw of inputs) {
       if (!String(raw).trim()) continue;
@@ -336,10 +436,10 @@ async function handleApi(req, res, pathname) {
       const rec = {
         id: crypto.randomUUID(), name: n.ascii, displayName: n.unicode,
         expiry: null, created: null, registrar: null, status: [], nameservers: [],
-        source: null, manualExpiry: false, note: body.note || '', tags: [],
+        source: null, manualExpiry: false, note: String(body.note || '').slice(0, 1000), tags: [],
         addedAt: new Date().toISOString(), lastChecked: null, error: null,
       };
-      if (body.expiry) { rec.expiry = parseLooseDate(body.expiry); rec.manualExpiry = true; rec.source = 'manual'; }
+      if (manualExpiry) { rec.expiry = manualExpiry; rec.manualExpiry = true; rec.source = 'manual'; }
       added.push(rec);
     }
     db.domains.push(...added);
@@ -360,14 +460,15 @@ async function handleApi(req, res, pathname) {
     if (!parts[3] && method === 'PUT') {
       const body = await readBody(req);
       if ('expiry' in body) {
-        rec.expiry = body.expiry ? parseLooseDate(body.expiry) : null;
-        rec.manualExpiry = !!body.expiry;
-        if (body.expiry) { rec.source = 'manual'; rec.error = null; }
+        const iso = parseExpiryInput(body.expiry);
+        rec.expiry = iso;
+        rec.manualExpiry = !!iso;
+        if (iso) { rec.source = 'manual'; rec.error = null; }
       }
       if ('note' in body) rec.note = String(body.note || '').slice(0, 1000);
       if ('registrar' in body) rec.registrar = String(body.registrar || '').slice(0, 200) || null;
-      if ('tags' in body) rec.tags = (Array.isArray(body.tags) ? body.tags : String(body.tags).split(','))
-        .map((t) => String(t).trim()).filter(Boolean).slice(0, 20);
+      if ('tags' in body) rec.tags = (Array.isArray(body.tags) ? body.tags : String(body.tags ?? '').split(','))
+        .map((t) => String(t).trim().slice(0, 50)).filter(Boolean).slice(0, 20);
       saveDb();
       return send(res, 200, rec);
     }
@@ -385,18 +486,24 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/import' && method === 'POST') {
     const body = await readBody(req);
-    const list = Array.isArray(body) ? body : body.domains;
+    const list = Array.isArray(body) ? body : body && body.domains;
     if (!Array.isArray(list)) return send(res, 400, { error: 'Geçersiz yedek dosyası' });
+    if (list.length > 5000) return send(res, 400, { error: 'Yedek dosyasında çok fazla kayıt var (en fazla 5000)' });
     let count = 0;
     for (const item of list) {
-      const n = normalizeDomain(item && item.name);
+      if (!item || typeof item !== 'object') continue;
+      const n = normalizeDomain(item.name);
       if (!n || db.domains.some((d) => d.name === n.ascii)) continue;
+      const expiry = item.expiry ? parseLooseDate(item.expiry) : null;
       db.domains.push({
         id: crypto.randomUUID(), name: n.ascii, displayName: n.unicode,
-        expiry: item.expiry ? parseLooseDate(item.expiry) : null, created: item.created || null,
-        registrar: item.registrar || null, status: item.status || [], nameservers: item.nameservers || [],
-        source: item.source || null, manualExpiry: !!item.manualExpiry, note: item.note || '', tags: item.tags || [],
-        addedAt: item.addedAt || new Date().toISOString(), lastChecked: item.lastChecked || null, error: null,
+        expiry, created: isoOrNull(item.created),
+        registrar: typeof item.registrar === 'string' ? item.registrar.slice(0, 200) || null : null,
+        status: strList(item.status, 20, 100), nameservers: strList(item.nameservers, 20, 253),
+        source: ['rdap', 'whois', 'manual'].includes(item.source) ? item.source : null,
+        manualExpiry: !!item.manualExpiry && !!expiry,
+        note: typeof item.note === 'string' ? item.note.slice(0, 1000) : '', tags: strList(item.tags, 20, 50),
+        addedAt: isoOrNull(item.addedAt) || new Date().toISOString(), lastChecked: isoOrNull(item.lastChecked), error: null,
       });
       count++;
     }
@@ -407,16 +514,31 @@ async function handleApi(req, res, pathname) {
   return send(res, 404, { error: 'Bilinmeyen istek' });
 }
 
+const MAX_ADD = 200;
+
 const server = http.createServer(async (req, res) => {
-  const { pathname } = new URL(req.url, 'http://x');
   try {
-    if (pathname.startsWith('/api/')) return await handleApi(req, res, decodeURIComponent(pathname));
-    return serveStatic(req, res, decodeURIComponent(pathname));
+    let pathname;
+    try {
+      pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    } catch {
+      throw new HttpError(400, 'Geçersiz adres');
+    }
+    if (pathname.includes('\0')) throw new HttpError(400, 'Geçersiz adres');
+    if (pathname.startsWith('/api/')) {
+      checkRequestOrigin(req);
+      return await handleApi(req, res, pathname);
+    }
+    return serveStatic(req, res, pathname);
   } catch (e) {
+    if (res.headersSent) return res.destroy();
+    if (e instanceof HttpError) return send(res, e.status, { error: e.message });
     console.error(e);
-    send(res, 500, { error: e.message || 'Sunucu hatası' });
+    send(res, 500, { error: 'Sunucu hatası' });
   }
 });
+// Toplu eklemede sorgular sırayla yapıldığı için uzun sürebilir; Node'un 5 dk varsayılanını uzat.
+server.requestTimeout = 30 * 60e3;
 
 // ---------------------------------------------------------------- Otomatik yenileme
 
@@ -439,6 +561,11 @@ async function autoRefresh() {
 }
 
 if (require.main === module) {
+  server.on('error', (e) => {
+    if (e.code === 'EADDRINUSE') console.error(`\n  ⚠ ${PORT} portu kullanımda. Başka bir port deneyin: PORT=3001 node server.js\n`);
+    else console.error(e);
+    process.exit(1);
+  });
   server.listen(PORT, HOST, () => {
     console.log(`\n  Domain Takipçisi çalışıyor →  http://localhost:${PORT}\n  (Durdurmak için Ctrl+C)\n`);
     setTimeout(autoRefresh, 5000);
@@ -446,4 +573,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { normalizeDomain, parseLooseDate, parseWhois };
+module.exports = { server, normalizeDomain, parseLooseDate, parseWhois };

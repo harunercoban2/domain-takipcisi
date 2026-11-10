@@ -19,7 +19,7 @@
     <div class="top-actions">
       <button class="btn ghost" id="refreshAllBtn" title="Tüm alan adlarını yeniden sorgula">↻ Tümünü yenile</button>
       <div class="menu">
-        <button class="btn ghost" id="menuBtn" aria-haspopup="true">Dışa / İçe aktar ▾</button>
+        <button class="btn ghost" id="menuBtn" aria-haspopup="true" aria-expanded="false" aria-controls="menuList">Dışa / İçe aktar ▾</button>
         <div class="menu-list" id="menuList" hidden>
           <button data-act="csv">CSV olarak indir</button>
           <button data-act="ics">Takvime ekle (.ics hatırlatıcılar)</button>
@@ -42,7 +42,7 @@
 
     <section class="card add-card">
       <form id="addForm" autocomplete="off">
-        <textarea id="addInput" rows="1" placeholder="Alan adı ekle — ör. ornek.com (birden fazlası için virgül ya da satır başı kullanın)"></textarea>
+        <textarea id="addInput" rows="1" aria-label="Eklenecek alan adları" placeholder="Alan adı ekle — ör. ornek.com (birden fazlası için virgül ya da satır başı kullanın)"></textarea>
         <button class="btn primary" type="submit" id="addBtn">Ekle ve sorgula</button>
       </form>
       <p class="hint">Bitiş tarihi RDAP / WHOIS üzerinden otomatik bulunur. Bulunamazsa elle girebilirsiniz.</p>
@@ -50,7 +50,7 @@
 
     <section class="card">
       <div class="toolbar">
-        <input type="search" id="search" placeholder="Ara: alan adı, firma, not, etiket…">
+        <input type="search" id="search" placeholder="Ara: alan adı, firma, not, etiket…" aria-label="Alan adlarında ara">
         <div class="seg" id="filterSeg">
           <button data-filter="all" class="on">Tümü</button>
           <button data-filter="expired">Dolmuş</button>
@@ -79,7 +79,7 @@
               <th data-sort="registrar" class="hide-sm">Kayıt firması</th>
               <th class="hide-md">Not</th>
               <th data-sort="checked" class="hide-md">Son kontrol</th>
-              <th></th>
+              <th><span class="sr-only">İşlemler</span></th>
             </tr>
           </thead>
           <tbody id="tbody"></tbody>

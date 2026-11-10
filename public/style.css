@@ -110,7 +110,7 @@ th.sorted::after { content: " ↑"; } th.sorted.desc::after { content: " ↓"; }
 tbody tr:hover { background: color-mix(in srgb, var(--gray-bg) 60%, transparent); }
 tbody tr:last-child td { border-bottom: 0; }
 
-.dn { font-weight: 600; word-break: break-all; }
+.dn { font-weight: 600; overflow-wrap: break-word; }
 .dn a { color: inherit; text-decoration: none; }
 .dn a:hover { text-decoration: underline; }
 .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
@@ -192,7 +192,8 @@ dialog::backdrop { background: rgba(15,23,42,.45); }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hide-sm { display: none; }
   .date-sm { display: block; }
-  .dn { word-break: normal; overflow-wrap: anywhere; }
+  .dn { min-width: 9ch; }
+  .stat:last-child { grid-column: 1 / -1; }
   .actions { gap: 0; }
   .icon-btn { width: 28px; }
   #addInput { min-height: 64px; }
@@ -203,3 +204,8 @@ dialog::backdrop { background: rgba(15,23,42,.45); }
   .toolbar > * { min-width: 0; }
   #search { min-width: 0; width: 100%; flex-basis: 100%; }
 }
+
+/* Erişilebilirlik ve durum */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.icon-btn:disabled { cursor: progress; opacity: .7; }
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
